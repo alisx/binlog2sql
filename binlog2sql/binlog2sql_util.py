@@ -76,6 +76,8 @@ def parse_args():
                           help="Start time. format %%Y-%%m-%%d %%H:%%M:%%S", default='')
     interval.add_argument('--stop-datetime', dest='stop_time', type=str,
                           help="Stop Time. format %%Y-%%m-%%d %%H:%%M:%%S;", default='')
+    interval.add_argument('--save-as', dest='save_as', type=str, help='Save as file name', default='')
+
     parser.add_argument('--stop-never', dest='stop_never', action='store_true', default=False,
                         help="Continuously parse binlog. default: stop at the latest event when you start.")
     parser.add_argument('--help', dest='help', action='store_true', help='help information', default=False)
@@ -265,3 +267,18 @@ def reversed_blocks(fin, block_size=4096):
         here -= delta
         fin.seek(here, os.SEEK_SET)
         yield fin.read(delta)
+
+def read_log(log_file):
+    if os.path.exists(log_file):
+        f = open(log_file, 'r')
+        return f.read().split('#')
+    else:
+        return [1,4]
+
+def write_log(log_file, content):
+    with open(log_file, 'w') as f:
+        f.write(content)
+
+if __name__ == "__main__":
+    write_log('log_12', "23#3434")
+    print(read_log('log_12'))

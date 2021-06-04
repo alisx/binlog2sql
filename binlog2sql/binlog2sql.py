@@ -7,14 +7,15 @@ import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import QueryEvent, RotateEvent, FormatDescriptionEvent
 from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, create_unique_file, temp_open, \
-    reversed_lines, is_dml_event, event_type
+    reversed_lines, is_dml_event, event_type, read_log, write_log
+from shutil import copyfile
 
 
 class Binlog2sql(object):
 
     def __init__(self, connection_settings, start_file=None, start_pos=None, end_file=None, end_pos=None,
                  start_time=None, stop_time=None, only_schemas=None, only_tables=None, no_pk=False,
-                 flashback=False, stop_never=False, back_interval=1.0, only_dml=True, sql_type=None):
+                 flashback=False, stop_never=False, back_interval=1.0, only_dml=True, sql_type=None, save_as=None):
         """
         conn_setting: {'host': 127.0.0.1, 'port': 3306, 'user': user, 'passwd': passwd, 'charset': 'utf8'}
         """
@@ -44,6 +45,9 @@ class Binlog2sql(object):
 
         self.binlogList = []
         self.connection = pymysql.connect(**self.conn_setting)
+        self.last_pos = self.end_pos
+        self.save_as = save_as
+
         with self.connection as cursor:
             cursor.execute("SHOW MASTER STATUS")
             self.eof_file, self.eof_pos = cursor.fetchone()[:2]
@@ -67,7 +71,7 @@ class Binlog2sql(object):
                                     only_tables=self.only_tables, resume_stream=True, blocking=True)
 
         flag_last_event = False
-        e_start_pos, last_pos = stream.log_pos, stream.log_pos
+        e_start_pos, self.last_pos = stream.log_pos, stream.log_pos
         # to simplify code, we do not use flock for tmp_file.
         tmp_file = create_unique_file('%s.%s' % (self.conn_setting['host'], self.conn_setting['port']))
         with temp_open(tmp_file, "w") as f_tmp, self.connection as cursor:
@@ -83,7 +87,7 @@ class Binlog2sql(object):
                     elif event_time < self.start_time:
                         if not (isinstance(binlog_event, RotateEvent)
                                 or isinstance(binlog_event, FormatDescriptionEvent)):
-                            last_pos = binlog_event.packet.log_pos
+                            self.last_pos = binlog_event.packet.log_pos
                         continue
                     elif (stream.log_file not in self.binlogList) or \
                             (self.end_pos and stream.log_file == self.end_file and stream.log_pos > self.end_pos) or \
@@ -94,7 +98,7 @@ class Binlog2sql(object):
                     #     raise ValueError('unknown binlog file or position')
 
                 if isinstance(binlog_event, QueryEvent) and binlog_event.query == 'BEGIN':
-                    e_start_pos = last_pos
+                    e_start_pos = self.last_pos
 
                 if isinstance(binlog_event, QueryEvent) and not self.only_dml:
                     sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event,
@@ -111,14 +115,16 @@ class Binlog2sql(object):
                             print(sql)
 
                 if not (isinstance(binlog_event, RotateEvent) or isinstance(binlog_event, FormatDescriptionEvent)):
-                    last_pos = binlog_event.packet.log_pos
+                    self.last_pos = binlog_event.packet.log_pos
                 if flag_last_event:
                     break
 
             stream.close()
             f_tmp.close()
-            if self.flashback:
-                self.print_rollback_sql(filename=tmp_file)
+            # if self.flashback:
+            #     self.print_rollback_sql(filename=tmp_file)
+            if self.save_as:
+                copyfile(tmp_file, self.save_as)
         return True
 
     def print_rollback_sql(self, filename):
@@ -142,9 +148,22 @@ class Binlog2sql(object):
 if __name__ == '__main__':
     args = command_line_args(sys.argv[1:])
     conn_setting = {'host': args.host, 'port': args.port, 'user': args.user, 'passwd': args.password, 'charset': 'utf8'}
+    
+    # 获得文件和最后的位置
     binlog2sql = Binlog2sql(connection_settings=conn_setting, start_file=args.start_file, start_pos=args.start_pos,
                             end_file=args.end_file, end_pos=args.end_pos, start_time=args.start_time,
                             stop_time=args.stop_time, only_schemas=args.databases, only_tables=args.tables,
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
-                            back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type)
-    binlog2sql.process_binlog()
+                            back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type, save_as=args.save_as)
+    log_file = "log_%s.%s" % (conn_setting['host'], conn_setting['port'])
+    
+    log = read_log(log_file)
+    # 对比最后的位置是否有变化
+    print(log[1], binlog2sql.eof_pos)
+    if int(log[1]) != binlog2sql.eof_pos:
+        binlog2sql.save_as = "sql/%s.%s.%s" % (conn_setting['host'], conn_setting['port'], log[0])
+        
+        binlog2sql.start_pos = int(log[1])
+        binlog2sql.process_binlog()
+        fileid = int(log[0]) + 1
+        write_log(log_file, "%d#%d" % (fileid, binlog2sql.last_pos))
