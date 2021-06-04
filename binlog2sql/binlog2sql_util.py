@@ -111,8 +111,8 @@ def command_line_args(args):
     if args.help or need_print_help:
         parser.print_help()
         sys.exit(1)
-    if not args.start_file:
-        raise ValueError('Lack of parameter: start_file')
+    # if not args.start_file:
+    #     raise ValueError('Lack of parameter: start_file')
     if args.flashback and args.stop_never:
         raise ValueError('Only one of flashback or stop-never can be True')
     if args.flashback and args.no_pk:
@@ -273,7 +273,7 @@ def read_log(log_file):
         f = open(log_file, 'r')
         return f.read().split('#')
     else:
-        return [1,4]
+        return [1,4,""]
 
 def write_log(log_file, content):
     with open(log_file, 'w') as f:

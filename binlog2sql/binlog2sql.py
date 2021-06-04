@@ -20,13 +20,13 @@ class Binlog2sql(object):
         conn_setting: {'host': 127.0.0.1, 'port': 3306, 'user': user, 'passwd': passwd, 'charset': 'utf8'}
         """
 
-        if not start_file:
-            raise ValueError('Lack of parameter: start_file')
+        # if not start_file:
+        #     raise ValueError('Lack of parameter: start_file')
 
         self.conn_setting = connection_settings
-        self.start_file = start_file
+        # self.start_file = start_file
         self.start_pos = start_pos if start_pos else 4    # use binlog v4
-        self.end_file = end_file if end_file else start_file
+        # self.end_file = end_file if end_file else start_file
         self.end_pos = end_pos
         if start_time:
             self.start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
@@ -53,8 +53,13 @@ class Binlog2sql(object):
             self.eof_file, self.eof_pos = cursor.fetchone()[:2]
             cursor.execute("SHOW MASTER LOGS")
             bin_index = [row[0] for row in cursor.fetchall()]
+            
+            self.start_file = start_file if start_file else bin_index[0]
+            self.end_file = end_file if end_file else bin_index[-1]
+
             if self.start_file not in bin_index:
                 raise ValueError('parameter error: start_file %s not in mysql server' % self.start_file)
+
             binlog2i = lambda x: x.split('.')[1]
             for binary in bin_index:
                 if binlog2i(self.start_file) <= binlog2i(binary) <= binlog2i(self.end_file):
@@ -155,6 +160,7 @@ if __name__ == '__main__':
                             stop_time=args.stop_time, only_schemas=args.databases, only_tables=args.tables,
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
                             back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type, save_as=args.save_as)
+
     log_file = "log_%s.%s" % (conn_setting['host'], conn_setting['port'])
     
     log = read_log(log_file)
@@ -162,8 +168,9 @@ if __name__ == '__main__':
     print(log[1], binlog2sql.eof_pos)
     if int(log[1]) != binlog2sql.eof_pos:
         binlog2sql.save_as = "sql/%s.%s.%s" % (conn_setting['host'], conn_setting['port'], log[0])
-        
+        binlog2sql.start_file = log[2]
         binlog2sql.start_pos = int(log[1])
+
         binlog2sql.process_binlog()
         fileid = int(log[0]) + 1
-        write_log(log_file, "%d#%d" % (fileid, binlog2sql.last_pos))
+        write_log(log_file, "%d#%d#%s" % (fileid, binlog2sql.last_pos, binlog2sql.end_file))
