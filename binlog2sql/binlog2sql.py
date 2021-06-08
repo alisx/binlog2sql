@@ -79,7 +79,8 @@ class Binlog2sql(object):
         e_start_pos, self.last_pos = stream.log_pos, stream.log_pos
         # to simplify code, we do not use flock for tmp_file.
         tmp_file = create_unique_file('%s.%s' % (self.conn_setting['host'], self.conn_setting['port']))
-        with temp_open(tmp_file, "w") as f_tmp, self.connection as cursor:
+        tmp_file_sql = create_unique_file('%s.%s.sql' % (self.conn_setting['host'], self.conn_setting['port']))
+        with temp_open(tmp_file, "w") as f_tmp, temp_open(tmp_file_sql, "w") as f_tmp_sql, self.connection as cursor:
             for binlog_event in stream:
                 if not self.stop_never:
                     try:
@@ -110,6 +111,7 @@ class Binlog2sql(object):
                                                        flashback=self.flashback, no_pk=self.no_pk)
                     if sql:
                         print(sql)
+                        f_tmp_sql.write(sql + '\n')
                 elif is_dml_event(binlog_event) and event_type(binlog_event) in self.sql_type:
                     for row in binlog_event.rows:
                         sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event, no_pk=self.no_pk,
@@ -118,6 +120,7 @@ class Binlog2sql(object):
                             f_tmp.write(sql + '\n')
                         else:
                             print(sql)
+                            f_tmp_sql.write(sql + '\n')
 
                 if not (isinstance(binlog_event, RotateEvent) or isinstance(binlog_event, FormatDescriptionEvent)):
                     self.last_pos = binlog_event.packet.log_pos
@@ -126,10 +129,12 @@ class Binlog2sql(object):
 
             stream.close()
             f_tmp.close()
-            # if self.flashback:
-            #     self.print_rollback_sql(filename=tmp_file)
+            f_tmp_sql.close()
+
+            if self.flashback:
+                self.print_rollback_sql(filename=tmp_file)
             if self.save_as:
-                copyfile(tmp_file, self.save_as)
+                copyfile(tmp_file_sql, self.save_as)
         return True
 
     def print_rollback_sql(self, filename):
@@ -165,7 +170,6 @@ if __name__ == '__main__':
     
     log = read_log(log_file)
     # 对比最后的位置是否有变化
-    print(log[1], binlog2sql.eof_pos)
     if int(log[1]) != binlog2sql.eof_pos:
         binlog2sql.save_as = "sql/%s.%s.%s" % (conn_setting['host'], conn_setting['port'], log[0])
         binlog2sql.start_file = log[2]
