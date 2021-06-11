@@ -183,7 +183,7 @@ def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=Non
     elif flashback is False and isinstance(binlog_event, QueryEvent) and binlog_event.query != 'BEGIN' \
             and binlog_event.query != 'COMMIT':
         if binlog_event.schema:
-            sql = 'USE {0};\n'.format(binlog_event.schema)
+            sql = 'USE {0};\n'.format(fix_object(binlog_event.schema))
         sql += '{0};'.format(fix_object(binlog_event.query))
 
     return sql

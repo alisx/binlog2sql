@@ -7,8 +7,10 @@ import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import QueryEvent, RotateEvent, FormatDescriptionEvent
 from binlog2sql_util import command_line_args, concat_sql_from_binlog_event, create_unique_file, temp_open, \
-    reversed_lines, is_dml_event, event_type, read_log, write_log
+    reversed_lines, is_dml_event, event_type
 from shutil import copyfile
+import argparse
+import re
 
 
 class Binlog2sql(object):
@@ -49,6 +51,35 @@ class Binlog2sql(object):
         self.save_as = save_as
 
         with self.connection as cursor:
+
+            # 处理一下数据库和表
+            if only_schemas:
+                cursor.execute('select SCHEMA_NAME from information_schema.SCHEMATA')
+                allschemas = [r[0] for r in cursor.fetchall()]
+                schemas = []
+                re_sch = re.compile(only_schemas)
+                for s in allschemas:
+                    if re_sch.match(s):
+                        schemas.append(s)
+                if len(schemas):
+                    self.only_schemas = schemas
+                else:
+                    raise ValueError('指定的数据库不存在：%s' % only_schemas)
+
+            if only_tables:
+                cursor.execute("select table_name from information_schema.tables where table_type='base table'")
+                alltables = [r[0] for r in cursor.fetchall()]
+                tables = []
+                print(only_tables)
+                re_tb = re.compile(only_tables)
+                for s in alltables:
+                    if re_tb.match(s):
+                        tables.append(s)
+                if len(tables):
+                    self.only_tables = tables
+                else:
+                    raise ValueError('指定的库表不存在：%s' % only_tables)
+        
             cursor.execute("SHOW MASTER STATUS")
             self.eof_file, self.eof_pos = cursor.fetchone()[:2]
             cursor.execute("SHOW MASTER LOGS")
@@ -110,7 +141,7 @@ class Binlog2sql(object):
                     sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event,
                                                        flashback=self.flashback, no_pk=self.no_pk)
                     if sql:
-                        print(sql)
+                        # print(sql)
                         f_tmp_sql.write(sql + '\n')
                 elif is_dml_event(binlog_event) and event_type(binlog_event) in self.sql_type:
                     for row in binlog_event.rows:
@@ -119,7 +150,7 @@ class Binlog2sql(object):
                         if self.flashback:
                             f_tmp.write(sql + '\n')
                         else:
-                            print(sql)
+                            # print(sql)
                             f_tmp_sql.write(sql + '\n')
 
                 if not (isinstance(binlog_event, RotateEvent) or isinstance(binlog_event, FormatDescriptionEvent)):
@@ -154,27 +185,32 @@ class Binlog2sql(object):
     def __del__(self):
         pass
 
-
-if __name__ == '__main__':
-    args = command_line_args(sys.argv[1:])
-    conn_setting = {'host': args.host, 'port': args.port, 'user': args.user, 'passwd': args.password, 'charset': 'utf8'}
-    
+def createSql(conf):
+    conn_setting = {'host': conf['host'], 'port': conf.getint('port'), 'user': conf['user'], 'passwd': conf['password'], 'charset': 'utf8'}
     # 获得文件和最后的位置
+    args = argparse.Namespace(back_interval=1.0, databases=conf['databases'], end_file='', end_pos=0, flashback=False, help=False, host='', no_pk=False, only_dml=False, password='', port=3306, save_as='', sql_type=['INSERT', 'UPDATE', 'DELETE'], start_file=None, start_pos=4, start_time='', stop_never=False, stop_time='', tables=conf['tables'], user='')
     binlog2sql = Binlog2sql(connection_settings=conn_setting, start_file=args.start_file, start_pos=args.start_pos,
                             end_file=args.end_file, end_pos=args.end_pos, start_time=args.start_time,
                             stop_time=args.stop_time, only_schemas=args.databases, only_tables=args.tables,
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
                             back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type, save_as=args.save_as)
-
-    log_file = "log_%s.%s" % (conn_setting['host'], conn_setting['port'])
-    
-    log = read_log(log_file)
     # 对比最后的位置是否有变化
-    if int(log[1]) != binlog2sql.eof_pos:
-        binlog2sql.save_as = "sql/%s.%s.%s" % (conn_setting['host'], conn_setting['port'], log[0])
-        binlog2sql.start_file = log[2]
-        binlog2sql.start_pos = int(log[1])
+    if conf.getint('position') != binlog2sql.eof_pos:
+        binlog2sql.save_as = "%s%s.%s.%s" % (conf['sqlFilePath'], conn_setting['host'], conn_setting['port'], conf['fileId'])
+        binlog2sql.start_file = conf['binlogfile']
+        binlog2sql.start_pos = conf.getint('position')
 
         binlog2sql.process_binlog()
-        fileid = int(log[0]) + 1
-        write_log(log_file, "%d#%d#%s" % (fileid, binlog2sql.last_pos, binlog2sql.end_file))
+        fileid = conf.getint('fileId') + 1
+        
+        conf['fileId'] = str(fileid)
+        conf['position'] = str(binlog2sql.last_pos)
+        conf['binlogfile'] = binlog2sql.end_file
+        return {
+            'sqlFile': binlog2sql.save_as,
+            'PFileId': fileid,
+            'position': binlog2sql.last_pos,
+            'binlogfile': binlog2sql.end_file
+        }
+    else:
+        return None
